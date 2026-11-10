@@ -1,0 +1,48 @@
+name: hermes-local-voice
+version: 0.1.0
+author: George Steward
+description: Offline voice capture and transcription for Hermes Agent using faster-whisper and PipeWire or ffmpeg.
+requires_hermes: ">=0.21.5"
+license: MIT
+python_runtime: external
+provides_tools:
+  - transcribe_audio
+  - voice_record_start
+  - voice_record_stop
+  - transcribe_last
+provides_hooks:
+  - pre_gateway_dispatch
+  - pre_llm_call
+config_schema:
+  model_size:
+    type: str
+    default: "base.en"
+    description: "Whisper model identifier (tiny.en, base.en, small.en, medium.en, large-v3-turbo)."
+  compute_type:
+    type: str
+    default: "int8"
+    description: "CTranslate2 compute precision (int8, float16, float32)."
+  language:
+    type: str
+    default: "en"
+    description: "Language code for transcription (for example en) or auto for detection."
+  model_dir:
+    type: str
+    default: ""
+    description: "Directory for cached Whisper models. Defaults to HERMES_HOME/plugin-data/hermes-local-voice/models."
+  max_file_mb:
+    type: int
+    default: 100
+    description: "Maximum accepted audio file size in megabytes."
+  server_url:
+    type: str
+    default: "http://127.0.0.1:8001"
+    description: "Local faster-whisper job server URL on loopback."
+  prefer_server:
+    type: bool
+    default: true
+    description: "Use the local loopback job server when reachable before loading faster-whisper directly."
+  auto_transcribe_inbound:
+    type: bool
+    default: true
+    description: "Automatically transcribe audio attachments arriving in chat messages."
