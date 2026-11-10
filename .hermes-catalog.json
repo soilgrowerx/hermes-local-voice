@@ -1,8 +1,8 @@
 {
   "name": "hermes-local-voice",
   "description": "Offline voice capture and transcription for Hermes Agent using faster-whisper and PipeWire or ffmpeg",
-  "repo": "georgessteward/hermes-local-voice",
-  "commit": "f8c529059c710ce7c04623dbfce01f25208b874a",
+  "repo": "soilgrowerx/hermes-local-voice",
+  "commit": "7d795868bc7796f3234187435cab06822fbd85e3",
   "version": "0.1.0",
   "author": "George Steward",
   "license": "MIT",
