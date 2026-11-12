@@ -8,7 +8,7 @@ Audio files and microphone recordings processed by `hermes-local-voice` are tran
 
 ## What It Does
 
-`hermes-local-voice` adds four agent tools, two inbound chat hooks, an in-session `/local-voice` slash command, and a headless `hermes voice` CLI subcommand:
+`hermes-local-voice` adds four agent tools, a speech-to-text provider, two optional inbound chat hooks, an in-session `/local-voice` slash command, and a headless `hermes voice` CLI subcommand:
 
 * **Tools:**
   * `transcribe_audio(path)`: validates and transcribes a local audio file (`.wav`, `.mp3`, `.ogg`, `.opus`, `.m4a`, `.flac`, `.webm`, `.aac`, `.mp4`, `.wma`, `.caf`). Returns transcript text, duration in seconds, detected language, and the model name.
@@ -16,7 +16,7 @@ Audio files and microphone recordings processed by `hermes-local-voice` are tran
   * `voice_record_stop(auto_transcribe=False, cleanup_on_transcribe_success=False)`: stops active microphone capture and returns the saved audio path and duration in seconds.
   * `transcribe_last()`: returns the most recent transcript from memory or `HERMES_HOME/plugin-data/hermes-local-voice/last_transcript.json`.
 * **Message Hooks:**
-  * `pre_gateway_dispatch`: automatically transcribes inbound voice notes and audio attachments arriving through messaging gateways into text before agent dispatch.
+  * `pre_gateway_dispatch` (opt-in, off by default): transcribes inbound voice notes and audio attachments arriving through messaging gateways into text before agent dispatch.
   * `pre_llm_call`: automatically transcribes local audio file attachments referenced in CLI or desktop chat turns and injects the transcript context.
 * **Headless CLI:**
   * `hermes voice <file>` prints the transcript to standard output without starting an interactive chat session.
@@ -121,10 +121,40 @@ plugins:
         language: "en"
         model_dir: ""
         max_file_mb: 100
-        server_url: "http://127.0.0.1:8001"
-        prefer_server: true
-        auto_transcribe_inbound: true
+        server_url: ""            # empty: never contact a loopback server
+        prefer_server: false      # only honoured when server_url is set
+        auto_transcribe_inbound: false
 ```
+
+## Inbound Transcription (preferred path)
+
+Register this plugin as Hermes's speech-to-text provider instead of relying on the
+gateway hook:
+
+```yaml
+stt:
+  provider: hermes_local_voice
+```
+
+Core then transcribes only messages it has already admitted, so a stranger on a
+connected platform cannot trigger transcription.
+
+`auto_transcribe_inbound` still exists for compatibility, but it runs in
+`pre_gateway_dispatch`, which fires **before** sender authorization. It is off by
+default for that reason. Enable it only on a private, single-user deployment.
+
+## Child Processes and Secrets
+
+Every child process (ffprobe, ffmpeg, the Whisper worker, the model downloader, and
+microphone capture) receives an explicit minimal environment: `PATH`, `HOME`, `LANG`,
+plus the capture variables or Hugging Face variables that child actually needs.
+Provider API keys are never inherited.
+
+## Cleanup Boundary
+
+`cleanup_on_success` deletes a file only when it resolves inside this plugin's own
+`plugin-data/hermes-local-voice/recordings` directory. Any other path is transcribed
+and left alone.
 
 ## Temporary File Policy
 

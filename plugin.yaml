@@ -11,7 +11,6 @@ provides_tools:
   - voice_record_stop
   - transcribe_last
 provides_hooks:
-  - pre_gateway_dispatch
   - pre_llm_call
 config_schema:
   model_size:
@@ -36,13 +35,13 @@ config_schema:
     description: "Maximum accepted audio file size in megabytes."
   server_url:
     type: str
-    default: "http://127.0.0.1:8001"
-    description: "Local faster-whisper job server URL on loopback."
+    default: ""
+    description: "Optional local faster-whisper job server URL. Empty means no server is contacted; 8001 is a common dev-server port, so never default to it."
   prefer_server:
     type: bool
-    default: true
-    description: "Use the local loopback job server when reachable before loading faster-whisper directly."
+    default: false
+    description: "Contact server_url before loading faster-whisper directly. Only honoured when server_url is set."
   auto_transcribe_inbound:
     type: bool
-    default: true
-    description: "Automatically transcribe audio attachments arriving in chat messages."
+    default: false
+    description: "Legacy opt-in. Runs in pre_gateway_dispatch BEFORE sender authorization, so any stranger on a connected platform can trigger transcription. Prefer setting stt.provider to hermes_local_voice."

@@ -13,6 +13,7 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from .runtime import minimal_env
 from .engine import (
     VoiceBackendError,
     VoiceInputError,
@@ -189,12 +190,13 @@ def start_recording() -> dict[str, Any]:
     try:
         with err_log.open("wb") as err_fh:
             proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=err_fh,
-                start_new_session=True,
-            )
+                  cmd,
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.DEVNULL,
+                  stderr=err_fh,
+                  start_new_session=True,
+                  env=minimal_env("capture"),
+              )
     except OSError as exc:
         err_log.unlink(missing_ok=True)
         return {

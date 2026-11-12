@@ -6,6 +6,7 @@ from typing import Any
 
 from .cli import handle_slash_voice, handle_voice_cli, setup_voice_cli
 from .hooks import on_pre_gateway_dispatch, on_pre_llm_call
+from .provider import build_provider_class
 from .schemas import (
     TRANSCRIBE_AUDIO_SCHEMA,
     TRANSCRIBE_LAST_SCHEMA,
@@ -31,9 +32,12 @@ def _load_context_config(ctx: Any) -> dict[str, Any]:
         "language": "en",
         "model_dir": "",
         "max_file_mb": 100,
-        "server_url": "http://127.0.0.1:8001",
-        "prefer_server": True,
-        "auto_transcribe_inbound": True,
+        "server_url": "",
+        "prefer_server": False,
+        # Off by default: pre_gateway_dispatch runs BEFORE sender authorization, so
+        # enabling this lets any stranger on a connected platform trigger CPU-heavy
+        # transcription. Prefer `stt.provider = hermes_local_voice` instead.
+        "auto_transcribe_inbound": False,
     }
     cfg: dict[str, Any] = {}
     get_cfg = getattr(ctx, "get_config", None)
@@ -80,7 +84,18 @@ def register(ctx: Any) -> None:
         description="Return the most recent transcript from hermes-local-voice",
     )
 
-    ctx.register_hook("pre_gateway_dispatch", on_pre_gateway_dispatch)
+    provider_cls = build_provider_class()
+    if provider_cls is not None:
+        try:
+            ctx.register_transcription_provider(provider_cls(cfg))
+        except Exception:
+            # Older cores without the transcription registry keep the tools usable.
+            pass
+
+    # Preferred inbound path: core selects this provider via `stt.provider` and only
+    # transcribes messages it has already admitted. The legacy hook is opt-in.
+    if bool(cfg.get("auto_transcribe_inbound", False)):
+        ctx.register_hook("pre_gateway_dispatch", on_pre_gateway_dispatch)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
 
     ctx.register_cli_command(

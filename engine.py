@@ -17,6 +17,8 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from .runtime import hermes_home as _runtime_hermes_home, minimal_env
+
 SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
     ".wav",
     ".mp3",
@@ -85,11 +87,13 @@ class VoiceBackendError(RuntimeError):
 
 
 def get_hermes_home() -> Path:
-    """Resolve HERMES_HOME dynamically without hardcoded user paths."""
-    env_home = os.environ.get("HERMES_HOME", "").strip()
-    if env_home:
-        return Path(env_home).expanduser().resolve()
-    return (Path.home() / ".hermes").resolve()
+    """Resolve the Hermes home for the running profile.
+
+    Delegates to ``hermes_constants.get_hermes_home()`` when core is importable, so a
+    multi-profile gateway writes where the running profile actually lives, rather
+    than into whatever directory launched the process.
+    """
+    return _runtime_hermes_home()
 
 
 def get_plugin_data_dir() -> Path:
@@ -224,6 +228,7 @@ def _probe_with_ffprobe(path: Path) -> float | None:
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            env=minimal_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise VoiceInputError(
@@ -414,6 +419,7 @@ def convert_to_wav_16k(source_path: Path) -> tuple[Path, bool]:
             text=True,
             timeout=60,
             stdin=subprocess.DEVNULL,
+            env=minimal_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         if temp_wav.exists():
@@ -522,6 +528,7 @@ def download_model(model_size: str, config: dict[str, Any] | None = None) -> dic
                 text=True,
                 timeout=600,
                 stdin=subprocess.DEVNULL,
+                env=minimal_env("download"),
             )
             if proc.returncode != 0:
                 stderr = (proc.stderr or "").strip() or "model download failed"
@@ -711,6 +718,7 @@ def _transcribe_with_faster_whisper(
             text=True,
             timeout=180,
             stdin=subprocess.DEVNULL,
+            env=minimal_env(),
         )
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip() or "faster-whisper subprocess failed"
@@ -791,8 +799,10 @@ def transcribe_file(
     model_size = str(cfg.get("model_size") or "base.en").strip()
     compute_type = str(cfg.get("compute_type") or "int8").strip()
     language = str(cfg.get("language") or "en").strip()
-    server_url = str(cfg.get("server_url") if "server_url" in cfg else "http://127.0.0.1:8001").strip()
-    prefer_server = bool(cfg.get("prefer_server", True))
+    # Off unless the user configured a server: 8001 is a common dev-server port,
+    # and silently POSTing every audio file there is not a safe default.
+    server_url = str(cfg.get("server_url") or "").strip()
+    prefer_server = bool(cfg.get("prefer_server", False)) and bool(server_url)
 
     validated_path, probed_duration = validate_audio_file(path_str, max_file_mb=max_file_mb)
     work_path, is_temp_conversion = convert_to_wav_16k(validated_path)
@@ -831,7 +841,14 @@ def transcribe_file(
     if is_temp_conversion and work_path.exists():
         work_path.unlink(missing_ok=True)
     if cleanup_source_on_success and validated_path.exists():
-        validated_path.unlink(missing_ok=True)
+        # Only ever delete files this plugin recorded itself.
+        recordings_dir = get_plugin_data_dir() / "recordings"
+        try:
+            inside = validated_path.resolve().is_relative_to(recordings_dir.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside:
+            validated_path.unlink(missing_ok=True)
 
     final_duration = result.get("duration")
     if final_duration is None or float(final_duration) <= 0.0:

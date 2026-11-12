@@ -6,9 +6,11 @@ import json
 from typing import Any
 
 from .engine import (
+    MODEL_DISK_MB,
     VoiceBackendError,
     VoiceInputError,
     get_last_transcript,
+    get_plugin_data_dir,
     transcribe_file,
 )
 from .recorder import start_recording, stop_recording
@@ -27,6 +29,18 @@ def get_plugin_config() -> dict[str, Any]:
     return dict(_PLUGIN_CONFIG)
 
 
+def _is_plugin_recording(path_str: str) -> bool:
+    """True only for files this plugin recorded inside its own recordings dir."""
+    try:
+        from pathlib import Path
+
+        target = Path(path_str).expanduser().resolve()
+        root = (get_plugin_data_dir() / "recordings").resolve()
+        return target.is_relative_to(root)
+    except (OSError, ValueError):
+        return False
+
+
 def handle_transcribe_audio(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     """Handler for the transcribe_audio tool."""
     params = dict(args or {})
@@ -36,9 +50,17 @@ def handle_transcribe_audio(args: dict[str, Any] | None = None, **kwargs: Any) -
     if params.get("language"):
         cfg["language"] = str(params["language"]).strip()
     if params.get("model_size"):
-        cfg["model_size"] = str(params["model_size"]).strip()
+        requested = str(params["model_size"]).strip()
+        # Reject unknown model names instead of joining them into a path.
+        if requested not in MODEL_DISK_MB:
+            return json.dumps({
+                "status": "error",
+                "error_code": "unknown_model",
+                "error": f"Unknown model_size '{requested}'. Supported: {', '.join(MODEL_DISK_MB)}",
+            })
+        cfg["model_size"] = requested
 
-    cleanup = bool(params.get("cleanup_on_success", False))
+    cleanup = bool(params.get("cleanup_on_success", False)) and _is_plugin_recording(path)
 
     try:
         result = transcribe_file(path, config=cfg, cleanup_source_on_success=cleanup)

@@ -26,6 +26,7 @@ from hermes_local_voice.engine import (
     find_cached_model_path,
     find_whisper_python,
     get_hermes_home,
+    get_plugin_data_dir,
     get_last_transcript,
     get_model_dir,
     list_models_status,
@@ -43,6 +44,7 @@ from hermes_local_voice.tools import (
     handle_transcribe_audio,
     handle_transcribe_last,
     handle_voice_record_start,
+    set_plugin_config,
     handle_voice_record_stop,
     set_plugin_config,
 )
@@ -64,6 +66,22 @@ def _write_valid_pcm_wav(path: Path, duration_sec: float = 0.5, sample_rate: int
 @pytest.fixture(autouse=True)
 def isolated_plugin_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Isolate HERMES_VOICE_DATA_DIR per test so tests never pollute real user state."""
+    # Core is not importable from the plugin's own test environment; stub the
+    # transcription provider ABC so registration paths are exercised for real.
+    import sys
+    import types
+
+    if "agent.transcription_provider" not in sys.modules:
+        agent_pkg = sys.modules.setdefault("agent", types.ModuleType("agent"))
+        provider_mod = types.ModuleType("agent.transcription_provider")
+
+        class _Base:
+            pass
+
+        provider_mod.TranscriptionProvider = _Base  # type: ignore[attr-defined]
+        sys.modules["agent.transcription_provider"] = provider_mod
+        agent_pkg.transcription_provider = provider_mod  # type: ignore[attr-defined]
+
     data_dir = tmp_path / "plugin_data"
     data_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_VOICE_DATA_DIR", str(data_dir))
@@ -74,12 +92,27 @@ def isolated_plugin_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "language": "en",
         "model_dir": "",
         "max_file_mb": 100,
-        "server_url": "http://127.0.0.1:8001",
-        "prefer_server": True,
-        "auto_transcribe_inbound": True,
+        "server_url": "",
+        "prefer_server": False,
+        "auto_transcribe_inbound": False,
     })
     yield data_dir
     clear_last_transcript()
+
+
+
+def _enable_loopback_server(inbound: bool = False) -> None:
+    """Opt in to the loopback job server explicitly; the shipped default is off."""
+    set_plugin_config({
+        "model_size": "base.en",
+        "compute_type": "int8",
+        "language": "en",
+        "model_dir": "",
+        "max_file_mb": 100,
+        "server_url": "http://127.0.0.1:8001",
+        "prefer_server": True,
+        "auto_transcribe_inbound": inbound,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +233,9 @@ def test_audio_preserved_when_transcription_fails(tmp_path: Path, monkeypatch: p
 
 
 def test_temp_recording_cleaned_up_on_success(tmp_path: Path) -> None:
-    clip = _write_valid_pcm_wav(tmp_path / "temp_capture.wav", duration_sec=0.5)
+    recordings = get_plugin_data_dir() / "recordings"
+    recordings.mkdir(parents=True, exist_ok=True)
+    clip = _write_valid_pcm_wav(recordings / "temp_capture.wav", duration_sec=0.5)
     fake_server_resp = {
         "text": "Cleaned up after success.",
         "duration": 0.5,
@@ -208,8 +243,9 @@ def test_temp_recording_cleaned_up_on_success(tmp_path: Path) -> None:
         "model": "base.en",
         "backend": "loopback_server",
     }
+    cfg = {"server_url": "http://127.0.0.1:8001", "prefer_server": True}
     with patch("hermes_local_voice.engine._try_loopback_server", return_value=fake_server_resp):
-        res = transcribe_file(str(clip), cleanup_source_on_success=True)
+        res = transcribe_file(str(clip), config=cfg, cleanup_source_on_success=True)
     assert res["status"] == "ok"
     assert res["text"] == "Cleaned up after success."
     assert not clip.exists(), "Temporary source file should be removed after successful transcription"
@@ -311,6 +347,7 @@ def test_transcribe_last_lifecycle(tmp_path: Path) -> None:
         "model": "base.en",
         "backend": "loopback_server",
     }
+    _enable_loopback_server()
     with patch("hermes_local_voice.engine._try_loopback_server", return_value=fake_resp):
         tx_res = json.loads(handle_transcribe_audio({"path": str(clip)}))
     assert tx_res["status"] == "ok"
@@ -342,6 +379,7 @@ def test_pre_gateway_dispatch_hook_rewrites_audio_attachment(tmp_path: Path) -> 
         "model": "base.en",
         "backend": "loopback_server",
     }
+    _enable_loopback_server(inbound=True)
     with patch("hermes_local_voice.engine._try_loopback_server", return_value=fake_resp):
         hook_out = on_pre_gateway_dispatch(event)
 
@@ -364,6 +402,7 @@ def test_pre_llm_call_hook_injects_transcript_context(tmp_path: Path) -> None:
         "model": "base.en",
         "backend": "loopback_server",
     }
+    _enable_loopback_server(inbound=True)
     with patch("hermes_local_voice.engine._try_loopback_server", return_value=fake_resp):
         hook_out = on_pre_llm_call(session_id="sess-1", user_message=msg)
 
@@ -384,6 +423,7 @@ def test_cli_subcommand_and_slash_command(tmp_path: Path, capsys: pytest.Capture
         "model": "base.en",
         "backend": "loopback_server",
     }
+    _enable_loopback_server()
     with patch("hermes_local_voice.engine._try_loopback_server", return_value=fake_resp):
         args = parser.parse_args([str(clip)])
         code = run_voice_cli(args)
@@ -396,7 +436,7 @@ def test_cli_subcommand_and_slash_command(tmp_path: Path, capsys: pytest.Capture
 
 
 def test_plugin_register_wires_expected_capabilities() -> None:
-    recorded: dict[str, list[str]] = {"tools": [], "hooks": [], "commands": []}
+    recorded: dict[str, list[str]] = {"tools": [], "hooks": [], "commands": [], "providers": []}
 
     class StubContext:
         def get_config(self, key: str, default: Any = None) -> Any:
@@ -414,6 +454,9 @@ def test_plugin_register_wires_expected_capabilities() -> None:
         def register_command(self, name: str, **kwargs: Any) -> None:
             recorded["commands"].append(f"slash:{name}")
 
+        def register_transcription_provider(self, provider: Any) -> None:
+            recorded["providers"].append(getattr(provider, "name", "?"))
+
     plugin_root.register(StubContext())
     assert recorded["tools"] == [
         "transcribe_audio",
@@ -421,7 +464,9 @@ def test_plugin_register_wires_expected_capabilities() -> None:
         "voice_record_stop",
         "transcribe_last",
     ]
-    assert recorded["hooks"] == ["pre_gateway_dispatch", "pre_llm_call"]
+    assert recorded["providers"] == ["hermes_local_voice"]
+    # pre_gateway_dispatch is opt-in because it runs before sender authorization.
+    assert recorded["hooks"] == ["pre_llm_call"]
     assert "cli:voice" in recorded["commands"]
     assert "slash:local-voice" in recorded["commands"]
 
@@ -528,3 +573,119 @@ def test_concurrent_transcriptions_do_not_corrupt_state(tmp_path: Path) -> None:
     assert last is not None
     assert last["status"] == "ok"
     assert last["path"] in (str(clip_a.resolve()), str(clip_b.resolve()))
+
+
+# ---------------------------------------------------------------------------
+# 7. Core review regressions (PR 152986)
+# ---------------------------------------------------------------------------
+
+
+def _stub_ctx(**overrides: Any):
+    values = dict(overrides)
+
+    class StubContext:
+        def get_config(self, key: str, default: Any = None) -> Any:
+            return values.get(key, default)
+
+    return StubContext()
+
+
+def test_defaults_are_safe() -> None:
+    """No loopback server, no pre-auth transcription unless the user opts in."""
+    cfg = plugin_root._load_context_config(_stub_ctx())
+    assert cfg["server_url"] == ""
+    assert cfg["prefer_server"] is False
+    assert cfg["auto_transcribe_inbound"] is False
+
+
+def test_auto_transcribe_inbound_is_opt_in() -> None:
+    recorded: list[str] = []
+
+    class StubContext:
+        def get_config(self, key: str, default: Any = None) -> Any:
+            return True if key == "auto_transcribe_inbound" else default
+
+        def register_tool(self, name: str, **kwargs: Any) -> None:
+            pass
+
+        def register_hook(self, hook_name: str, callback: Any, **kwargs: Any) -> None:
+            recorded.append(hook_name)
+
+        def register_cli_command(self, name: str, **kwargs: Any) -> None:
+            pass
+
+        def register_command(self, name: str, **kwargs: Any) -> None:
+            pass
+
+        def register_transcription_provider(self, provider: Any) -> None:
+            pass
+
+    plugin_root.register(StubContext())
+    assert recorded == ["pre_gateway_dispatch", "pre_llm_call"]
+
+
+def test_model_size_path_traversal_rejected() -> None:
+    raw = handle_transcribe_audio({"path": "/tmp/x.wav", "model_size": "../../etc"})
+    payload = json.loads(raw)
+    assert payload["status"] == "error"
+    assert payload["error_code"] == "unknown_model"
+    assert "Supported" in payload["error"]
+
+
+def test_cleanup_outside_recordings_is_refused(tmp_path: Path) -> None:
+    """A model-supplied path outside the plugin's recordings dir is never deleted."""
+    clip = _write_valid_pcm_wav(tmp_path / "outside.wav", duration_sec=0.5)
+    fake_server_resp = {
+        "text": "Kept.",
+        "duration": 0.5,
+        "language": "en",
+        "model": "base.en",
+        "backend": "loopback_server",
+    }
+    cfg = {"server_url": "http://127.0.0.1:8001", "prefer_server": True}
+    with patch("hermes_local_voice.engine._try_loopback_server", return_value=fake_server_resp):
+        res = transcribe_file(str(clip), config=cfg, cleanup_source_on_success=True)
+    assert res["status"] == "ok"
+    assert clip.exists(), "Files outside the recordings directory must survive cleanup_on_success"
+
+
+def test_minimal_env_drops_provider_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    from hermes_local_voice.runtime import minimal_env
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("NOUS_API_KEY", "nous-should-not-leak")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = minimal_env()
+    assert env.get("PATH") == "/usr/bin"
+    assert "OPENAI_API_KEY" not in env
+    assert "NOUS_API_KEY" not in env
+
+
+def test_provider_envelope_contract(tmp_path: Path) -> None:
+    import sys
+    import types
+
+    if "agent.transcription_provider" not in sys.modules:
+        agent_pkg = sys.modules.setdefault("agent", types.ModuleType("agent"))
+        provider_mod = types.ModuleType("agent.transcription_provider")
+
+        class _Base:
+            pass
+
+        provider_mod.TranscriptionProvider = _Base  # type: ignore[attr-defined]
+        sys.modules["agent.transcription_provider"] = provider_mod
+        agent_pkg.transcription_provider = provider_mod  # type: ignore[attr-defined]
+
+    from hermes_local_voice.provider import build_provider_class
+
+    cls = build_provider_class()
+    if cls is None:
+        pytest.skip("core without transcription provider ABC")
+    provider = cls({"model_size": "base.en"})
+    assert provider.name == "hermes_local_voice"
+    assert "base.en" in [m["id"] for m in provider.list_models()]
+    missing = provider.transcribe(str(tmp_path / "nope.wav"))
+    assert missing["success"] is False
+    assert missing["transcript"] == ""
+    assert missing["provider"] == "hermes_local_voice"
+    assert missing.get("error")
