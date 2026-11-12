@@ -45,7 +45,7 @@ Cloud speech-to-text APIs require network access, account credentials, and per-m
 Install from Git or a local checkout using the Hermes plugin manager:
 
 ```bash
-hermes plugins install https://github.com/georgessteward/hermes-local-voice --yes-deps --enable
+hermes plugins install https://github.com/soilgrowerx/hermes-local-voice --yes-deps --enable
 ```
 
 For a local repository checkout:
