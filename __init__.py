@@ -21,7 +21,7 @@ from .tools import (
     set_plugin_config,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def _load_context_config(ctx: Any) -> dict[str, Any]:

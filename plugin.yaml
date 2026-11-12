@@ -1,5 +1,5 @@
 name: hermes-local-voice
-version: 0.1.0
+version: 0.1.1
 author: George Steward
 description: Offline voice capture and transcription for Hermes Agent using faster-whisper and PipeWire or ffmpeg.
 requires_hermes: ">=0.21.5"
